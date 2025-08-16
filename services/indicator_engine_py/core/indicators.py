@@ -1,87 +1,88 @@
-"""Implement common technical indicators using pandas and ta library."""
-from __future__ import annotations
+"""Implement common technical indicators using pure pandas.
 
+This module provides stand‑alone implementations of SMA, EMA, RSI,
+MACD and Bollinger Bands without relying on external TA libraries.
+These functions return pandas Series/DataFrames consistent with the
+original project’s expectations.
+"""
+
+from __future__ import annotations
 import pandas as pd
 import numpy as np
-from ta.trend import SMAIndicator, EMAIndicator, MACD
-from ta.momentum import RSIIndicator
-from typing import Union
-from ta.volatility import BollingerBands
-
 
 
 def compute_sma(close: pd.Series, window: int) -> pd.Series:
-    """Simple moving average."""
-    return SMAIndicator(close=close, window=window, fillna=False).sma_indicator()
+    """
+    Compute the simple moving average (SMA) over the given window.
+    Missing values in the initial window remain NaN to avoid look‑ahead.
+    """
+    return close.rolling(window=window, min_periods=window).mean()
 
 
 def compute_ema(close: pd.Series, window: int) -> pd.Series:
-    """Exponential moving average."""
-    return EMAIndicator(close=close, window=window, fillna=False).ema_indicator()
+    """
+    Compute the exponential moving average (EMA) using pandas’ ewm.
+    The `adjust=False` parameter replicates typical trading‑platform
+    EMA behaviour.
+    """
+    return close.ewm(span=window, adjust=False, min_periods=window).mean()
 
 
 def compute_rsi(close: pd.Series, window: int = 14) -> pd.Series:
-    """Relative Strength Index."""
-    return RSIIndicator(close=close, window=window, fillna=False).rsi()
+    """
+    Compute the Relative Strength Index (RSI) using Wilder’s method.
+    RSI oscillates between 0 and 100. Oversold <30, overbought >70.
+    """
+    delta = close.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+    avg_gain = gain.ewm(alpha=1.0 / window, min_periods=window, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1.0 / window, min_periods=window, adjust=False).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
 
 def compute_macd(
-    close: pd.Series,
-    fast: int = 12,
-    slow: int = 26,
-    signal: int = 9,
+    close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9
 ) -> pd.DataFrame:
     """
-    Compute MACD, MACD signal and histogram.  Returns a DataFrame
-    with columns ``macd``, ``macd_signal`` and ``macd_diff``.
+    Compute the Moving Average Convergence Divergence (MACD).
+    Returns a DataFrame with columns macd, macd_signal and macd_diff.
     """
-    macd_ind = MACD(close=close, window_slow=slow, window_fast=fast, window_sign=signal, fillna=False)
-    df = pd.DataFrame({
-        "macd": macd_ind.macd(),
-        "macd_signal": macd_ind.macd_signal(),
-        "macd_diff": macd_ind.macd_diff(),
-    })
-    return df
+    ema_fast = compute_ema(close, fast)
+    ema_slow = compute_ema(close, slow)
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False, min_periods=signal).mean()
+    macd_diff = macd_line - signal_line
+    return pd.DataFrame(
+        {"macd": macd_line, "macd_signal": signal_line, "macd_diff": macd_diff}
+    )
 
-def compute_bollinger(close: pd.Series, window: int = 20, n_std: float = 2.0) -> pd.DataFrame:
+
+def compute_bollinger(
+    close: pd.Series, window: int = 20, n_std: float = 2.0
+) -> pd.DataFrame:
     """
-    Return a DataFrame with columns exactly:
-      - 'bb_lower'
-      - 'bb_mid'
-      - 'bb_upper'
-    so that code like indicators_map["bollinger"]["bb_lower"] works.
+    Compute Bollinger Bands (lower, mid, upper) using a rolling mean
+    (mid band) and rolling standard deviation.  Missing values in the
+    initial window remain NaN.
     """
     mid = close.rolling(window=window, min_periods=window).mean()
-    # Use population std (ddof=0) to match many finance libraries. Change to ddof=1 if you prefer sample std.
     std = close.rolling(window=window, min_periods=window).std(ddof=0)
-
     upper = mid + n_std * std
     lower = mid - n_std * std
+    return pd.DataFrame({"bb_lower": lower, "bb_mid": mid, "bb_upper": upper})
 
-    out = pd.DataFrame(
-        {
-            "bb_lower": lower.astype(float),
-            "bb_mid": mid.astype(float),
-            "bb_upper": upper.astype(float),
-        }
-    )
-    return out
 
-# ─────────────────────────────────────────────
-# Bollinger Signal (optional helper)
-# ─────────────────────────────────────────────
-def bollinger_signal(close: pd.Series, bb_lower: pd.Series, bb_upper: pd.Series) -> pd.Series:
+def bollinger_signal(
+    close: pd.Series, bb_lower: pd.Series, bb_upper: pd.Series
+) -> pd.Series:
     """
-    Simple contrarian signal:
-      +1 when close < lower band
-      -1 when close > upper band
-       0 otherwise
+    Contrarian Bollinger-band signal: +1 when price is below the lower band
+    (buy), -1 when price is above the upper band (sell); 0 otherwise.
     """
-    df = pd.concat(
-        [close.rename("close"), bb_lower.rename("bb_lower"), bb_upper.rename("bb_upper")],
-        axis=1,
-    )
-    sig = pd.Series(0, index=df.index, dtype="int8", name="bollinger_signal")
-    sig[df["close"] < df["bb_lower"]] = 1
-    sig[df["close"] > df["bb_upper"]] = -1
+    sig = pd.Series(0, index=close.index, dtype=np.int8)
+    sig[close < bb_lower] = 1
+    sig[close > bb_upper] = -1
     return sig
