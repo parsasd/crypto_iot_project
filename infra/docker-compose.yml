@@ -1,0 +1,99 @@
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    ports:
+      - "1883:1883"
+    restart: unless-stopped
+
+  mailhog:
+    image: axllent/mailpit:latest
+    ports:
+      - "8025:8025"   # Web UI
+      - "1025:1025"   # SMTP
+
+  indicator_api:
+    build:
+      context: ../services/indicator_engine_py
+      dockerfile: Dockerfile
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - SMTP_HOST=mailhog
+      - SMTP_PORT=1025
+      - MQTT_BROKER=mosquitto
+      - COINGECKO_API_KEY=CG-ztLvCgtX4uMYnCFzBtA9VSoL
+      - COINGECKO_BASE_URL=https://api.coingecko.com
+      - COINGECKO_API_KEY_HEADER=x-cg-demo-api-key
+      - COINGECKO_API_KEY_PARAM=x_cg_demo_api_key
+      - COINGECKO_MAX_LOOKBACK_DAYS=365
+    depends_on:
+      - postgres
+      - mosquitto
+    ports:
+      - "8000:8000"
+
+  price_feeder:
+    build:
+      context: ../services/price_feeder_py
+      dockerfile: Dockerfile
+    environment:
+      - MQTT_BROKER=mosquitto
+      - SYMBOLS=bitcoin,ethereum
+    depends_on:
+      - mosquitto
+
+  esp32_sim:
+    build:
+      context: ../services/esp32_sim
+      dockerfile: Dockerfile
+    environment:
+      - MQTT_BROKER=mosquitto
+      - SYMBOLS=bitcoin,ethereum
+    depends_on:
+      - mosquitto
+
+  alert_engine:
+    build:
+      context: ../services/alert_engine_py
+      dockerfile: Dockerfile
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - SMTP_HOST=mailhog
+      - SMTP_PORT=1025
+      - MQTT_BROKER=mosquitto
+    depends_on:
+      - postgres
+      - mosquitto
+      - indicator_api
+
+  webapp:
+    build:
+      context: ../services/webapp
+      dockerfile: Dockerfile
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - INDICATOR_API_URL=http://indicator_api:8000
+      - SMTP_HOST=mailhog
+      - SMTP_PORT=1025
+    ports:
+      - "3000:3000"
+    depends_on:
+      - postgres
+      - indicator_api
+      - mailhog
+      - mosquitto
+
+volumes:
+  postgres_data:
